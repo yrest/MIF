@@ -14,18 +14,19 @@ Modern identity has become a concentration point of operational risk.
 
 Across public and private sectors, core applications increasingly depend on a small number of upstream identity providers. When those providers degrade, misconfigure federation, suffer outage, revoke trust relationships, or become politically constrained, the downstream systems that rely on them degrade with them. In many cases, entire organisations lose access not because their own applications are broken, but because their identity dependency is unavailable.
 
-The **Multi Identity Framework (MIF)** is a proposed architecture and open framework for **identity continuity, federation resilience, and provider abstraction**.
+The **Multi Identity Framework (MIF)** is a proposed open **resiliency policy layer** for existing identity brokers (Keycloak, Authentik, Dex). It is not a new identity provider, token issuer, or replacement control plane.
 
-MIF does **not** attempt to replace every existing identity platform. It does **not** attempt to become a universal super-directory. Instead, it introduces a control plane above existing providers and authoritative systems so that applications trust a stable framework layer rather than trusting a single upstream provider directly.
+MIF extends and governs existing brokers to provide graceful degradation during upstream IdP outages. Applications continue to trust the broker they already use. MIF governs what the broker may issue during normal and degraded states.
 
 At its core, MIF aims to provide:
 
-- identity provider abstraction
-- continuity during upstream provider outages
-- controlled fallback and degraded operation
-- trust-preserving, time-bound identity snapshots
-- portability across public and private identity domains
+- resiliency policies applied to existing identity brokers
+- continuity during upstream provider outages via controlled degraded mode
+- explicit `offline_fallback` scope enforcement during outages
+- out-of-band kill-switch / event bus for emergency revocation independent of the IdP
+- trust-preserving, time-bound identity snapshots with disclosed revocation limitations
 - auditable and policy-governed federation
+- mandatory post-recovery revalidation
 
 MIF is intended for environments where identity failure has consequences beyond inconvenience: government, healthcare, finance, regulated enterprise, critical infrastructure, and cross-organisation collaboration.
 
@@ -82,18 +83,20 @@ This coupling turns identity into a single operational choke point.
 
 MIF proposes a different model:
 
-> Applications trust the framework.  
-> The framework trusts and orchestrates multiple identity domains.
+> Applications trust the existing broker.  
+> The broker is governed by MIF resiliency policies.  
+> MIF governs continuity, fallback scopes, and revocation signals.
 
-MIF provides a stable identity control plane that can:
+MIF provides resiliency policy and continuity logic on top of an existing broker that can:
 
 - federate multiple upstream identity providers
 - validate and normalise identity assertions
-- issue its own signed framework tokens to downstream apps
+- enforce degraded-mode scope restrictions (`offline_fallback`)
 - maintain controlled continuity during provider failure
+- propagate emergency revocation signals via an out-of-band event bus
 - enforce policy around fallback, expiry, and assurance
 
-The goal is not identity independence in the absolute sense. The goal is **identity survivability and optionality**.
+The goal is not identity independence in the absolute sense. The goal is **identity survivability and optionality — without introducing a new single point of failure**.
 
 ---
 
@@ -162,6 +165,15 @@ Every continuity decision, assertion mapping, token issue, and fallback event mu
 - surveillance functions
 - mass profile aggregation beyond explicit policy scope
 
+### 5.3 Hard non-goals (architectural constraints)
+
+The following are not limitations to be overcome in later phases. They are deliberate architectural constraints:
+
+- **No real-time revocation parity in degraded mode.** When the upstream IdP is offline, MIF cannot confirm live revocation status. This is mitigated by restricting degraded sessions to `offline_fallback` scope (deny-by-default for privileged actions) and by the out-of-band kill-switch event bus. It is not solved by snapshots alone.
+- **No universal downstream API compatibility.** Applications that pass tokens to services requiring native provider tokens (Microsoft Graph API, Google Drive, etc.) will still fail during upstream outages. MIF does not eliminate this. OAuth 2.0 Token Exchange (RFC 8693) is an optional integration with its own outage limitations.
+- **No seamless token portability.** MIF broker tokens are not substitutes for native Entra or Google tokens in downstream services. Token exchange must be explicitly configured and its failure modes documented.
+- **No new single point of failure.** MIF itself must not become the identity monopoly it aims to prevent. Broker integration must be redundant and the kill-switch channel must be independent of all upstream IdPs.
+
 ---
 
 ## 6. Terminology
@@ -190,6 +202,12 @@ A root cryptographic or institutional authority used to validate signatures and 
 ### Subject Link
 A mapping between equivalent or associated identities across multiple domains.
 
+### `offline_fallback` Scope
+A token scope value that signals the token was issued in degraded mode without live upstream validation. Applications must treat this as a mandatory signal to deny privileged and transactional operations.
+
+### Kill Switch
+An out-of-band event channel, independent of all upstream identity providers, used to push emergency revocation signals to the MIF policy engine during a partitioned federation state.
+
 ---
 
 ## 7. Core architecture
@@ -199,19 +217,21 @@ A mapping between equivalent or associated identities across multiple domains.
 ```text
 [ Applications / Services ]
             ↓
-[ Multi Identity Framework (MIF) ]
+[ Keycloak / Authentik / Dex (identity broker) ]
+   ↑ policies, degraded-mode rules, kill-switch signals
+[ MIF (Resiliency Policy Layer) ]
             ↓
 [ Entra | Okta | Google | National eID | Local AD | Sector IdP ]
 ```
 
-Applications trust MIF-issued assertions and tokens. MIF is responsible for:
+Applications trust the broker they already use. MIF governs the broker and is responsible for:
 
-- upstream federation
-- claim validation and normalisation
-- policy enforcement
-- fallback logic
-- audit generation
-- token issuance
+- resiliency policies (normal and degraded mode rules)
+- `offline_fallback` scope issuance and enforcement
+- kill-switch / out-of-band revocation signal handling
+- snapshot management (issuance, validation, expiry)
+- continuity mode transitions and audit generation
+- post-recovery revalidation orchestration
 
 ## 7.2 Main components
 
@@ -372,7 +392,18 @@ Snapshots must be:
 - short-lived by default
 - policy-scoped
 
-## 9.4 Example snapshot envelope
+## 9.4 Revocation limitation
+
+> **Security constraint:** Identity snapshots do not provide real-time revocation guarantees. If a user account is revoked while the upstream IdP is offline, the snapshot may remain valid until it expires.
+>
+> This risk is mitigated by three mechanisms working together:
+> 1. **`offline_fallback` scope enforcement** — degraded-mode sessions are restricted to low-risk operations; privileged actions are denied regardless of snapshot validity.
+> 2. **Kill-switch / out-of-band event bus** — an event channel independent of the upstream IdP propagates emergency revocation signals to the MIF policy engine even during outage.
+> 3. **Short expiry + post-recovery revalidation** — all degraded sessions are invalidated when the IdP recovers and users must re-authenticate.
+>
+> Applications accepting tokens with `offline_fallback` scope must enforce deny-by-default for any privileged or transactional operation. This is not optional.
+
+## 9.5 Example snapshot envelope
 
 ```json
 {
@@ -467,12 +498,26 @@ Policies should govern:
 - revocation precedence
 - emergency override procedures
 - human approval requirements for sensitive operations
+- `offline_fallback` scope definition per service
+- kill-switch event handling and revocation propagation
 
-## 12.3 Example policy rules
+## 12.3 Degraded-mode deny-by-default requirement
 
-- tax filing portal may allow citizen login from fresh eID snapshot for 2 hours
-- payroll admin cannot execute payment approvals in fallback mode
-- healthcare records may allow read-only continuity but deny write operations
+When a token carries the `offline_fallback` scope, the **default posture must be denial** for any operation that is not explicitly pre-approved for degraded mode.
+
+Operations that must be blocked in `offline_fallback` mode regardless of other claims:
+
+- financial transactions, payment approvals, billing changes
+- password changes, credential resets, MFA changes
+- administrative writes (user provisioning, role assignments, permission changes)
+- data exports or bulk access operations
+- any operation that triggers downstream external service calls via native IdP tokens
+
+## 12.4 Example policy rules
+
+- tax filing portal may allow citizen login from fresh eID snapshot for 2 hours, read-only access only
+- payroll admin cannot execute payment approvals in fallback mode; must receive `offline_fallback` and deny transactional ops
+- healthcare records may allow read-only continuity but deny write operations and prescribing
 - inter-agency case management may require re-authentication once upstream provider returns
 
 ---
@@ -491,7 +536,11 @@ MIF should explicitly support continuity modes rather than pretending all operat
 
 - one provider unavailable or degraded
 - continuity based on recent signed snapshot or alternate provider
-- operations limited by policy
+- all tokens issued with `offline_fallback` scope
+- tokens are short-lived (recommended maximum: 30 minutes; balances session usability against the revocation lag window during IdP outage — the shorter the window, the smaller the exposure if the kill-switch signal is delayed)
+- applications must enforce deny-by-default for privileged operations
+- kill-switch event bus remains active for emergency revocation
+- degraded sessions are labelled with `degraded: true` in audit logs
 
 ### 13.3 Partitioned federation mode
 
@@ -504,7 +553,19 @@ MIF should explicitly support continuity modes rather than pretending all operat
 - broad upstream failure
 - break-glass governance
 - restricted set of critical services only
-- high audit requirements
+- highest audit requirements
+- human approval required for any access grant
+- kill-switch signals continuously polled from out-of-band channel
+- automatic expiry of all emergency sessions; no auto-renewal
+
+### 13.5 Post-recovery revalidation (mandatory)
+
+When an upstream IdP returns to normal operation:
+
+- all degraded and emergency continuity sessions are invalidated immediately
+- users must re-authenticate against the live IdP
+- any access granted during degraded mode is reviewed against the current revocation state
+- audit log entry is generated for every session that was active during degraded mode
 
 ---
 
@@ -554,9 +615,11 @@ Threats include:
 - malicious provider assertion injection
 - trust anchor compromise
 - privilege escalation through subject linking
-- revocation lag exploitation
-- fallback mode abuse
+- revocation lag exploitation during IdP outage
+- fallback mode abuse (e.g. using `offline_fallback` scope to bypass controls)
 - insider misuse
+- kill-switch channel compromise or suppression
+- forced degraded-mode via deliberate IdP disruption (availability attack to trigger weaker auth)
 
 ## 15.2 Security requirements
 
@@ -571,6 +634,9 @@ MIF should include:
 - strong admin separation of duties
 - revocation propagation mechanisms
 - continuous security monitoring
+- out-of-band kill-switch event bus that is operationally independent from all upstream IdPs
+- explicit `offline_fallback` scope label on all degraded-mode tokens
+- monitoring for forced or unexpectedly long degraded-mode durations
 
 ## 15.3 Snapshot safety constraints
 
@@ -579,7 +645,20 @@ Identity snapshots should never:
 - become indefinite bearer credentials
 - contain unnecessary personal data
 - override revocation policy blindly
+- grant scopes beyond `offline_fallback` when continuity mode is active
 - substitute for high-risk live re-authentication in sensitive workflows
+
+## 15.4 Kill-switch / out-of-band revocation
+
+The snapshot revocation gap (user terminated while IdP is offline) cannot be fully closed by snapshots alone. MIF must implement an out-of-band event bus for emergency revocation that:
+
+- is **operationally independent** from all upstream identity providers
+- can receive revocation events from HR systems, security incident response, or manual break-glass procedures
+- propagates revocation signals to the policy engine within a documented SLA (recommended: ≤60 seconds; this is a provisional value pending resolution of open question 24.10 on kill-switch availability SLA)
+- is monitored for availability independently of upstream IdP health
+- logs every revocation signal received and applied
+
+The kill-switch is not optional for production deployments.
 
 ---
 
@@ -721,40 +800,45 @@ MIF should not simply become a new proprietary lock-in layer.
 
 ## 21. Reference implementation direction
 
-A practical reference implementation could be built in layers.
+The MVP implementation targets Keycloak as the broker. Keycloak already handles multi-provider OIDC/SAML federation; MIF adds the resiliency policies, degraded-mode scope logic, kill-switch integration, and recovery orchestration on top.
 
-## 21.1 v0 prototype
+## 21.1 MVP scope (Keycloak-focused resiliency plugin)
 
 Goals:
-- prove the model
-- show token abstraction
-- demonstrate controlled fallback
+- demonstrate controlled degraded-mode access via `offline_fallback` scope
+- prove kill-switch revocation works during simulated IdP outage
+- show mandatory post-recovery revalidation
 
-Suggested components:
-- Keycloak or similar broker as initial federation layer
-- custom MIF policy engine
-- canonical identity mapping service
-- signed snapshot service
-- MIF token issuer
-- audit event stream
+Components:
+- Keycloak as the broker (existing OIDC/SAML federation preserved)
+- MIF resiliency policy set (OPA or Keycloak Policy SPI) enforcing `offline_fallback` rules
+- Snapshot service (signed JWTs, short-lived, policy-scoped)
+- Kill-switch event consumer (Redis Pub/Sub or NATS subscriber, propagates revocations to Keycloak sessions)
+- Audit event stream (structured log of every continuity decision)
 
-## 21.2 Prototype capabilities
+## 21.2 MVP capabilities
 
-- federate Entra + local IdP + one additional provider
-- issue MIF tokens to sample apps
-- simulate upstream outage
-- switch to snapshot-based continuity mode
-- enforce restricted fallback policy
-- log every decision
+- federate Entra + local IdP via Keycloak identity brokering
+- detect upstream provider outage and transition to degraded mode
+- issue tokens with `offline_fallback` scope during outage
+- enforce deny-by-default for privileged operations in demo apps
+- accept revocation events from kill-switch bus and invalidate sessions within SLA
+- restore normal mode and invalidate all degraded sessions on IdP recovery
+- log every continuity-mode transition and policy decision
 
-## 21.3 Example prototype stack
+## 21.3 MVP prototype stack
 
-- identity broker: Keycloak / Authentik / custom gateway
-- policy engine: Open Policy Agent or custom service
-- snapshot signer: dedicated signing service
-- audit stream: append-only log / event store
+- identity broker: Keycloak (primary); Authentik as alternative
+- policy engine: Open Policy Agent (Rego policies for `offline_fallback` scope enforcement)
+- snapshot signer: dedicated short-lived JWT issuer
+- kill-switch bus: Redis Pub/Sub (or NATS) independent of all upstream IdPs
+- audit stream: append-only structured log
 - trust material: X.509/JWK set rotation
-- demo apps: one low-risk portal, one high-risk admin app
+- demo apps: one low-risk read-only portal, one high-risk admin/write app
+
+## 21.4 Token exchange (optional, later phase)
+
+OAuth 2.0 Token Exchange (RFC 8693) may be evaluated as an optional integration allowing broker tokens to be exchanged for native provider tokens where the upstream IdP is available. This must clearly document failure modes during outage — token exchange cannot succeed when the target IdP is offline.
 
 ---
 
@@ -770,14 +854,17 @@ Recommended claims:
 - `iat` / `exp`
 - `amr` — authentication methods reference
 - `assurance`
-- `continuity_mode`
+- `continuity_mode` — boolean; true when issued during degraded or emergency mode
+- `degraded` — boolean; true when live upstream validation was not available at issuance
+- `scope` — must include `offline_fallback` when `degraded` is true
 - `source_assertions`
 - `policy_scope`
 - `linked_orgs`
 - `jti`
 - `snapshot_ref` (optional)
+- `kill_switch_checked_at` (optional) — timestamp of last kill-switch signal check
 
-Applications should be able to make decisions based on continuity mode and assurance explicitly.
+Applications must treat `degraded: true` and `scope` containing `offline_fallback` as a mandatory signal to enforce restricted operation mode. Applications that do not implement `offline_fallback` enforcement must not be permitted to operate in degraded mode.
 
 ---
 
@@ -831,6 +918,15 @@ Who can invoke emergency continuity mode, and how is abuse prevented?
 ### 24.7 Standardisation path
 Should MIF be documented as an architectural pattern, protocol extension set, reference implementation, or formal standard?
 
+### 24.8 CAE alignment
+Microsoft’s Continuous Access Evaluation (CAE) solves a related problem by issuing long-lived tokens with continuous revocation via event signals. How should MIF align with or extend CAE semantics across multiple vendors? Is a multi-vendor CAE profile the right long-term framing for MIF?
+
+### 24.9 RFC 8693 Token Exchange
+What is the practical scope of OAuth 2.0 Token Exchange (RFC 8693) within MIF? Which downstream API access patterns can it support, and what are the documented failure modes when the upstream IdP is unavailable during an exchange request?
+
+### 24.10 Kill-switch availability SLA
+What availability guarantee must the out-of-band kill-switch event bus provide? If the kill-switch channel itself is unavailable, should MIF fail closed (deny all degraded access) or fail open (continue degraded mode without revocation signals)?
+
 ---
 
 ## 25. Proposed roadmap
@@ -850,13 +946,16 @@ Should MIF be documented as an architectural pattern, protocol extension set, re
 - continuity mode definitions
 - trust model draft
 
-## Phase 2 — OSS proof of concept
+## Phase 2 — OSS proof of concept (Keycloak MVP)
 
-- minimal broker integration
-- snapshot service
-- policy engine
-- sample applications
-- simulated outage scenarios
+- Keycloak-focused resiliency plugin / policy set
+- `offline_fallback` scope issuance and enforcement examples
+- kill-switch event bus integration (Redis Pub/Sub or NATS)
+- signed snapshot service (short-lived, policy-scoped)
+- OPA policy engine with degraded-mode Rego policies
+- two demo applications: low-risk portal and high-risk admin app
+- simulated IdP outage scenarios with observable scope enforcement
+- post-recovery revalidation demonstration
 
 ## Phase 3 — Sector pilot
 
@@ -917,7 +1016,7 @@ Desired feedback areas:
 
 ## 28. One-sentence definition
 
-**MIF is an open framework for resilient, policy-governed identity continuity across multiple identity providers and trust domains.**
+**MIF is an open resiliency policy layer for identity brokers, enabling safe degraded-mode access during upstream IdP outages through explicit scope restriction (`offline_fallback`), out-of-band kill-switch revocation, and mandatory post-recovery revalidation.**
 
 ---
 

@@ -537,7 +537,7 @@ MIF should explicitly support continuity modes rather than pretending all operat
 - one provider unavailable or degraded
 - continuity based on recent signed snapshot or alternate provider
 - all tokens issued with `offline_fallback` scope
-- tokens are short-lived (recommended maximum: 30 minutes)
+- tokens are short-lived (recommended maximum: 30 minutes; balances session usability against the revocation lag window during IdP outage — the shorter the window, the smaller the exposure if the kill-switch signal is delayed)
 - applications must enforce deny-by-default for privileged operations
 - kill-switch event bus remains active for emergency revocation
 - degraded sessions are labelled with `degraded: true` in audit logs
@@ -654,7 +654,7 @@ The snapshot revocation gap (user terminated while IdP is offline) cannot be ful
 
 - is **operationally independent** from all upstream identity providers
 - can receive revocation events from HR systems, security incident response, or manual break-glass procedures
-- propagates revocation signals to the policy engine within a documented SLA (recommended: ≤60 seconds)
+- propagates revocation signals to the policy engine within a documented SLA (recommended: ≤60 seconds; this is a provisional value pending resolution of open question 24.10 on kill-switch availability SLA)
 - is monitored for availability independently of upstream IdP health
 - logs every revocation signal received and applied
 

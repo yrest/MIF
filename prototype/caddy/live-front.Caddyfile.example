@@ -1,0 +1,28 @@
+# Example site block for YOUR front proxy (Caddy) in the live configuration.
+# It ends TLS for the node's hostname and forwards to the machine running the node over the mesh.
+#
+# Replace the hostname, the two client ranges and the node's mesh address.
+#
+# The certificate is obtained automatically, which needs ports 80 and 443 reachable from the
+# internet. Do the filtering here, as below, not in a firewall in front of Caddy.
+login.example.org {
+	# Only clients arriving from the VPN or the mesh. This sees mesh addresses only if clients
+	# resolve the hostname to this proxy's VPN or mesh address, so point it there in the DNS that
+	# VPN and mesh clients use.
+	@mesh remote_ip 10.8.0.0/24 100.64.0.0/10
+
+	# Only what sign-in needs. The administration console and the master realm stay unreachable.
+	@signin path /realms/mif/* /resources/*
+
+	handle @signin {
+		handle @mesh {
+			reverse_proxy 100.64.0.10:8080
+		}
+		handle {
+			respond "Not available from this network" 403
+		}
+	}
+	handle {
+		respond 404
+	}
+}

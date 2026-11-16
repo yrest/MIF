@@ -18,10 +18,10 @@ const path = require('node:path');
 const { chromium } = require('playwright');
 
 const MESH_HOST = process.env.MIF_HOST;
-const PORTAL = MESH_HOST ? `https://${MESH_HOST}:5443` : 'http://localhost:5080';
-const BROKER = MESH_HOST ? `https://${MESH_HOST}:8443` : 'http://localhost:8080';
-const UPSTREAM = MESH_HOST ? `https://${MESH_HOST}:8444` : 'http://localhost:8090';
-const NODE = MESH_HOST ? `https://${MESH_HOST}:8448` : 'http://localhost:8088';
+const PORTAL = process.env.DRILL_PORTAL_URL ?? (MESH_HOST ? `https://${MESH_HOST}:5443` : 'http://localhost:5080');
+const BROKER = process.env.DRILL_BROKER_URL ?? (MESH_HOST ? `https://${MESH_HOST}:8443` : 'http://localhost:8080');
+const UPSTREAM = process.env.DRILL_UPSTREAM_URL ?? (MESH_HOST ? `https://${MESH_HOST}:8444` : 'http://localhost:8090');
+const NODE = process.env.DRILL_NODE_URL ?? (MESH_HOST ? `https://${MESH_HOST}:8448` : 'http://localhost:8088');
 const OPERATOR = 'http://localhost:8081'; // never published beyond loopback
 const UPSTREAM_HOST = new URL(UPSTREAM).host;
 const BROKER_HOST = new URL(BROKER).host;

@@ -6,3 +6,5 @@ e2e/node_modules/
 e2e/artifacts/
 *.crt
 test-reports/
+backups/
+*.secret

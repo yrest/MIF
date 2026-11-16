@@ -3,8 +3,8 @@
 #
 #   docker compose up -d --build      start everything
 #
-# By default everything is served over plain HTTP on localhost only. To reach the stack from other
-# devices over a VPN or mesh, or to use a real Entra tenant, copy .env.example to .env and edit it.
+# This file is the simulation: plain HTTP on localhost, with a stand-in for Entra. It exists so the
+# automated outage drill can run without people or a tenant. For real use see docker-compose.live.yml.
 #   docker compose stop fake-entra    simulate the upstream outage
 #   docker compose start fake-entra   end it
 #   docker compose down -v            remove everything, including data
@@ -36,6 +36,9 @@ services:
       KC_DB_PASSWORD: mif-dev-only
       KC_HOSTNAME: http://localhost:8080
       KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      MIF_SSL_REQUIRED: none
+      MIF_NODE_CLIENT_SECRET: dev-only-node-secret
+      MIF_PORTAL_CLIENT_SECRET: dev-only-portal-secret
       MIF_PORTAL_URL: http://localhost:5080
       MIF_UPSTREAM_CLIENT_ID: mif-broker
       MIF_UPSTREAM_CLIENT_SECRET: dev-only-broker-secret

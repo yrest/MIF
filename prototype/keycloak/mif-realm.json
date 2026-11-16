@@ -2,7 +2,7 @@
   "realm": "mif",
   "enabled": true,
   "displayName": "MIF node",
-  "sslRequired": "none",
+  "sslRequired": "${MIF_SSL_REQUIRED}",
   "registrationAllowed": false,
   "accessTokenLifespan": 300,
   "ssoSessionIdleTimeout": 14400,
@@ -196,7 +196,7 @@
     {
       "clientId": "demo-portal",
       "name": "MIF demo portal",
-      "secret": "dev-only-portal-secret",
+      "secret": "${MIF_PORTAL_CLIENT_SECRET}",
       "publicClient": false,
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": false,
@@ -238,7 +238,7 @@
     {
       "clientId": "mif-node",
       "name": "MIF node (snapshot service + continuity controller)",
-      "secret": "dev-only-node-secret",
+      "secret": "${MIF_NODE_CLIENT_SECRET}",
       "publicClient": false,
       "standardFlowEnabled": false,
       "directAccessGrantsEnabled": false,

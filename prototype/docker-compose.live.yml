@@ -1,0 +1,119 @@
+# Live configuration: one MIF node for real use, with a real Entra tenant as the upstream.
+#
+# Unlike docker-compose.yml this is meant to be kept. Its data is never wiped, its secrets are
+# generated on the machine, and the broker runs in production mode behind your own TLS proxy.
+#
+#   ./scripts/init-live.sh <hostname> <bind-address>   create .env with generated secrets
+#   (fill in the ENTRA_* values in .env)
+#   docker compose up -d --build                       start
+#   ./scripts/backup.sh                                database and signing key, for backup or a move
+#
+# NEVER run `docker compose down -v` here: it deletes every user, passkey and snapshot.
+#
+# The hostname is permanent. Passkeys and every application are bound to it.
+name: mif-live
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: mif
+      POSTGRES_PASSWORD: ${MIF_DB_PASSWORD:?Run scripts/init-live.sh first}
+      POSTGRES_DB: keycloak
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mif -d keycloak"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  keycloak:
+    image: keycloak/keycloak:26.8.2
+    restart: unless-stopped
+    command: start --import-realm
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: mif
+      KC_DB_PASSWORD: ${MIF_DB_PASSWORD}
+      # TLS ends at your front proxy, which reaches this container over the mesh.
+      KC_HOSTNAME: https://${MIF_HOST:?Run scripts/init-live.sh first}
+      KC_HOSTNAME_ADMIN: http://localhost:8085
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_HTTP_ENABLED: "true"
+      KC_PROXY_HEADERS: xforwarded
+      # Used once, on first start, to create the administrator. Change the password afterwards.
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${MIF_ADMIN_PASSWORD:?Run scripts/init-live.sh first}
+      # Values for the placeholders in the realm file, read on first start only.
+      MIF_SSL_REQUIRED: external
+      MIF_NODE_CLIENT_SECRET: ${MIF_NODE_CLIENT_SECRET:?Run scripts/init-live.sh first}
+      MIF_PORTAL_CLIENT_SECRET: ${MIF_PORTAL_CLIENT_SECRET:?Run scripts/init-live.sh first}
+      MIF_PORTAL_URL: http://localhost:5080
+      MIF_UPSTREAM_CLIENT_ID: ${ENTRA_BROKER_CLIENT_ID:?Set ENTRA_BROKER_CLIENT_ID in .env}
+      MIF_UPSTREAM_CLIENT_SECRET: ${ENTRA_BROKER_CLIENT_SECRET:?Set ENTRA_BROKER_CLIENT_SECRET in .env}
+      MIF_UPSTREAM_ISSUER: https://login.microsoftonline.com/${ENTRA_TENANT_ID:?Set ENTRA_TENANT_ID in .env}/v2.0
+      MIF_UPSTREAM_AUTHORIZATION_URL: https://login.microsoftonline.com/${ENTRA_TENANT_ID}/oauth2/v2.0/authorize
+      MIF_UPSTREAM_TOKEN_URL: https://login.microsoftonline.com/${ENTRA_TENANT_ID}/oauth2/v2.0/token
+      MIF_UPSTREAM_JWKS_URL: https://login.microsoftonline.com/${ENTRA_TENANT_ID}/discovery/v2.0/keys
+    volumes:
+      - ./keycloak/mif-realm.json:/opt/keycloak/data/import/mif-realm.json:ro
+    ports:
+      # The address your front proxy connects to: this machine's address on the mesh. Restrict who
+      # may reach it with a mesh access policy, because anything that can reach this port can
+      # present itself as the proxy.
+      - "${MIF_BIND_ADDRESS:?Run scripts/init-live.sh first}:8080:8080"
+      # Administration console, from this machine only: http://localhost:8085/admin/
+      - "127.0.0.1:8085:8080"
+
+  mif-node:
+    build:
+      context: .
+      args: { PROJECT: Mif.Node }
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      Mif__Database: Host=postgres;Database=keycloak;Username=mif;Password=${MIF_DB_PASSWORD}
+      Mif__Keycloak__BaseUrl: http://keycloak:8080
+      Mif__Keycloak__ClientSecret: ${MIF_NODE_CLIENT_SECRET}
+      Mif__Upstream__DiscoveryUrl: https://login.microsoftonline.com/${ENTRA_TENANT_ID}/v2.0/.well-known/openid-configuration
+      # The token probe runs only when a probe client is configured.
+      Mif__Upstream__ProbeTokenUrl: https://login.microsoftonline.com/${ENTRA_TENANT_ID}/oauth2/v2.0/token
+      Mif__Upstream__ProbeClientId: ${ENTRA_PROBE_CLIENT_ID:-}
+      Mif__Upstream__ProbeClientSecret: ${ENTRA_PROBE_CLIENT_SECRET:-}
+      Mif__Upstream__ProbeScope: ${ENTRA_PROBE_SCOPE:-https://graph.microsoft.com/.default}
+      # About one minute of failures before degraded mode, two minutes of successes before recovery.
+      Mif__Continuity__ProbeIntervalSeconds: ${MIF_PROBE_INTERVAL_SECONDS:-15}
+      Mif__Continuity__FailureThreshold: ${MIF_FAILURE_THRESHOLD:-4}
+      Mif__Continuity__RecoveryThreshold: ${MIF_RECOVERY_THRESHOLD:-8}
+      Mif__Snapshot__Issuer: ${MIF_HOST}
+      Mif__Snapshot__KeyDirectory: /data/keys
+    volumes:
+      - mif-keys:/data/keys
+    ports:
+      - "127.0.0.1:8088:8080"  # /status, /healthz, JWKS, snapshot verification
+      - "127.0.0.1:8081:8081"  # operator endpoints
+
+  # Diagnostic application, reachable from this machine only. It shows whether a session is LIVE or
+  # CONTINUITY and which claims a token carries, before a real application is connected.
+  demo-portal:
+    build:
+      context: .
+      args: { PROJECT: Mif.DemoApp }
+    restart: unless-stopped
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_HTTP_PORTS: "5080"
+      Oidc__Authority: http://keycloak:8080/realms/mif
+      Oidc__ClientSecret: ${MIF_PORTAL_CLIENT_SECRET}
+      MifNode__StatusUrl: http://mif-node:8080/status
+    ports:
+      - "127.0.0.1:5080:5080"
+
+volumes:
+  postgres-data:
+  mif-keys:

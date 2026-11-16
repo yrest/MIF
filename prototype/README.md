@@ -14,7 +14,7 @@ Nothing here talks to Microsoft. A second Keycloak plays the part of Entra so th
 | `demo-portal` | 5080 | Example application that trusts only the MIF node |
 | `postgres` | internal | State for the broker and the node |
 
-All ports are bound to loopback. To reach the stack from another device, use mesh mode below.
+All ports are bound to loopback. This is a simulation for trying the idea and for the automated drill; for real use see the live configuration below.
 
 ## Run it
 
@@ -98,11 +98,12 @@ MIF_HOST=<same as in .env> NODE_EXTRA_CA_CERTS=../mif-test-root-ca.crt npm run d
 
 ```
 prototype/
-├─ docker-compose.yml         default: HTTP on localhost, stand-in for Entra
-├─ docker-compose.mesh.yml    adds HTTPS on one hostname for other devices
-├─ docker-compose.entra.yml   real Entra tenant instead of the stand-in
-├─ .env.example               selects the mode
-├─ caddy/Caddyfile            TLS proxy for mesh mode
+├─ docker-compose.yml         simulation: HTTP on localhost, stand-in for Entra
+├─ docker-compose.mesh.yml    simulation over HTTPS, for a second device
+├─ docker-compose.live.yml    live configuration: real Entra, production mode, kept data
+├─ scripts/                   init-live, add-app-client, backup, restore
+├─ caddy/                     TLS proxy for mesh mode, and an example for your own front proxy
+├─ .env.example               selects mesh mode (init-live.sh writes .env for the live configuration)
 ├─ Dockerfile                 builds either .NET service
 ├─ keycloak/
 │  ├─ mif-realm.json          broker realm: upstream IdP, both sign-in flows, clients
@@ -115,26 +116,58 @@ prototype/
 └─ e2e/outage-drill.cjs
 ```
 
-## Other modes
+## Live configuration: one node for real use
 
-The default is plain HTTP on localhost, which only works from the machine running the stack. Two more modes are selected in a `.env` file; copy [`.env.example`](.env.example) and edit it.
+`docker-compose.yml` is a simulation. `docker-compose.live.yml` is the same software set up to be kept: a real Entra tenant as the upstream, the broker in production mode, secrets generated on the machine, and data that is never wiped. Start small with a pilot group and one application, then add people and applications; nothing is rebuilt along the way.
 
-Switching modes changes URLs that are written into the realms at first start, so always recreate the stack afterwards:
+**Decide these first, because they cannot change later without everyone enrolling again:**
+
+- **The hostname**, for example `login.example.org`. Passkeys and every application are bound to it.
+- **That the data is kept.** Never run `docker compose down -v` against the live configuration.
+
+The machine can change. `scripts/backup.sh` and `scripts/restore.sh` move the node to another host under the same hostname, and existing passkeys keep working.
+
+### What you need
+
+- A TLS-terminating proxy that you run, reachable under the hostname, which forwards to this machine over your VPN or mesh. [`caddy/live-front.Caddyfile.example`](caddy/live-front.Caddyfile.example) is a Caddy site block that admits only VPN and mesh clients and exposes only the sign-in paths.
+- This machine's address on the mesh, where that proxy connects.
+- An Entra app registration for the broker:
+  - redirect URI (type Web) `https://<hostname>/realms/mif/broker/entra/endpoint`;
+  - a client secret;
+  - optional ID token claims `email`, `given_name` and `family_name`, otherwise the broker asks each user to type them at first sign-in;
+  - app roles for any roles you want carried into tokens.
+- Optionally a second app registration with a secret and no permissions, for the synthetic sign-in probe. Without it the node checks Entra's discovery document and signing keys only.
+
+### Set it up
 
 ```bash
-docker compose down -v && docker compose up -d --build
+./scripts/init-live.sh login.example.org 100.64.0.10   # hostname, this machine's mesh address
+# fill in the ENTRA_* values in .env
+docker compose up -d --build
+curl -s localhost:8088/status                           # expect Normal and upstreamHealthy true
 ```
 
-This deletes all users and passkeys. Passkeys are bound to the hostname and would not carry over anyway.
+Then:
 
-### Mesh mode: reach it from other devices
+- **Administration console:** `http://localhost:8085/admin/` on this machine only, user `admin`, password `MIF_ADMIN_PASSWORD` from `.env`. Create a personal administrator and delete the temporary one.
+- **Diagnostic portal:** `http://localhost:5080` on this machine only. Sign in to see whether a session is LIVE or CONTINUITY and which claims it carries.
+- **Connect an application:** `./scripts/add-app-client.sh <client-id> '<redirect-uri>'` registers it and prints what to configure in the application. The secret is written to a file, not shown.
+- **Rehearse an outage:** Entra cannot be stopped, so force degraded mode with the operator command above and release it with `Auto`.
+- **Back up:** `./scripts/backup.sh` writes the database and the signing key to `backups/`. Keep them, and `.env`, somewhere safe: together they are the node.
 
-Passkeys need HTTPS on a real hostname, so mesh mode puts a TLS proxy (Caddy) in front and publishes each service on its own port of one hostname.
+### Things to know
 
-```
-COMPOSE_FILE=docker-compose.yml:docker-compose.mesh.yml
-MIF_HOST=<a name that resolves to this machine on the VPN or mesh>
-```
+- Anything that can reach the broker's port on the mesh address can pose as your proxy. Limit that port to the proxy with a mesh access policy.
+- The proxy sees VPN and mesh client addresses only if clients resolve the hostname to the proxy's VPN or mesh address. Point it there in the DNS those clients use.
+- An application that does not understand the `mif_idp` claim gives full access in degraded mode. Connect only applications where that is acceptable, or that enforce the restriction themselves.
+- Once an application signs in through the node, it depends on the node every day, not only during an outage. The host must stay awake and start the stack after a reboot.
+- By default any account in the tenant can sign in. To limit it, require assignment on the Entra app registration.
+
+**Verified:** this configuration in production mode behind a proxy built from the example, with the stand-in as the upstream: the full outage drill, application registration, and a backup, wipe and restore round trip. **Not verified:** a real Entra tenant.
+
+## Mesh mode: the simulation over HTTPS
+
+For trying the simulation from a second device without a tenant. It puts a TLS proxy with its own test certificate authority in front and publishes each service on its own port of one hostname. Select it in `.env` (see [`.env.example`](.env.example)), then recreate the stack with `docker compose down -v && docker compose up -d --build`.
 
 | URL | Service |
 |---|---|
@@ -143,34 +176,22 @@ MIF_HOST=<a name that resolves to this machine on the VPN or mesh>
 | `https://MIF_HOST:8444` | Stand-in for Entra |
 | `https://MIF_HOST:8448` | MIF node, public endpoints |
 
-Certificates come from a private certificate authority that Caddy creates on first start. Every device you test from must trust its root certificate:
+Every device you test from must trust the test authority's root certificate:
 
 ```bash
 docker compose exec -T caddy cat /data/caddy/pki/authorities/local/root.crt > mif-test-root-ca.crt
 ```
 
-Install that file as a trusted root on each test device, and remove it when you are done: whoever holds the matching private key (it lives in the `caddy-data` volume) can impersonate any site to a device that trusts it. `docker compose down -v` destroys the key.
+Remove that trust when you are done: whoever holds the matching private key (it lives in the `caddy-data` volume) can impersonate any site to a device that trusts it. `docker compose down -v` destroys the key.
 
-Use one hostname for every network path. A passkey enrolled under one name does not work under another.
+## Limits
 
-### A real Entra tenant
+Of the simulation (`docker-compose.yml`, with or without mesh mode):
 
-**Not yet verified against a real tenant.** Add `docker-compose.entra.yml` to `COMPOSE_FILE` and fill in the `ENTRA_*` values in `.env`. The stand-in is then not started.
+- Keycloak runs in development mode, and every secret is a throwaway value that is public in this repository.
 
-In Entra you need an app registration for the broker:
+Of the live configuration:
 
-- Redirect URI (type Web): `https://MIF_HOST:8443/realms/mif/broker/entra/endpoint` in mesh mode, or `http://localhost:8080/realms/mif/broker/entra/endpoint` on localhost.
-- A client secret.
-- Optional ID token claims `email`, `given_name` and `family_name`, otherwise the broker asks each user to type them at first sign-in.
-- An app role with the value `finance-approver`, assigned to the test user who should be allowed the high-risk action.
-
-A second app registration with a secret and no permissions enables the synthetic sign-in probe. Without it the node checks Entra's discovery document and signing keys only.
-
-Entra cannot be stopped to simulate an outage, so force degraded mode with the operator command above.
-
-## Not for deployment as is
-
-- Keycloak runs in development mode over plain HTTP.
-- Every secret in `docker-compose.yml` and the realm files is a throwaway value.
+- One node. There is no standby yet; see the profile for the intended layout.
 - The broker and the node share one database user.
-- There is no standby node; see the profile for the intended Azure and on-prem layout.
+- No alerting. Decide how you learn that the node has gone degraded, on a channel that does not depend on what is failing.

@@ -201,10 +201,10 @@
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": false,
       "redirectUris": [
-        "http://localhost:5080/*"
+        "${MIF_PORTAL_URL}/*"
       ],
       "attributes": {
-        "post.logout.redirect.uris": "http://localhost:5080/*"
+        "post.logout.redirect.uris": "${MIF_PORTAL_URL}/*"
       },
       "protocolMappers": [
         {

@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.HttpOverrides;
 using Mif.Client;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -62,6 +63,15 @@ builder.Services.AddAuthorizationBuilder()
     .AddPolicy("ApprovePayments", policy => policy.RequireRole("finance-approver"));
 
 var app = builder.Build();
+if (builder.Configuration.GetValue<bool>("TrustForwardedHeaders"))
+{
+    // Behind the TLS-terminating proxy of mesh mode: take scheme and host from its headers, so that
+    // redirect URIs are built as https. Only safe because the proxy is the sole way in to this container.
+    var forwarded = new ForwardedHeadersOptions { ForwardedHeaders = ForwardedHeaders.XForwardedProto | ForwardedHeaders.XForwardedHost };
+    forwarded.KnownIPNetworks.Clear();
+    forwarded.KnownProxies.Clear();
+    app.UseForwardedHeaders(forwarded);
+}
 app.UseAuthentication();
 app.UseAuthorization();
 app.UseAntiforgery();

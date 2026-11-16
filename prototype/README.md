@@ -14,6 +14,8 @@ Nothing here talks to Microsoft. A second Keycloak plays the part of Entra so th
 | `demo-portal` | 5080 | Example application that trusts only the MIF node |
 | `postgres` | internal | State for the broker and the node |
 
+All ports are bound to loopback. To reach the stack from another device, use mesh mode below.
+
 ## Run it
 
 Requires Docker with Compose.
@@ -34,7 +36,8 @@ Use a browser with a passkey provider (Windows Hello, Touch ID, a phone, or a se
 3. Stop the upstream: `docker compose stop fake-entra`. Within about ten seconds `/status` reports `Degraded`.
 4. Sign out, then sign in again. The sign-in page now offers only the passkey. The portal shows a **CONTINUITY** session.
 5. **View records** works. **Approve payment** is refused with 403, although Alice still holds the role.
-6. Bring the upstream back: `docker compose start fake-entra`. The node returns to `Normal` and ends all sessions; the next sign-in goes through the upstream again.
+6. Bring the upstream back: `docker compose start fake-entra`. The node returns to `Normal` and ends all sessions at the broker.
+7. The portal still shows **CONTINUITY** until you sign out and in again, because its own session lasts up to an hour. The next sign-in goes through the upstream and shows **LIVE**.
 
 `bob` / `bob-dev-only` is a second user without the approver role.
 
@@ -76,7 +79,7 @@ Unit tests cover snapshot signing, the mode state machine, eligibility rules, re
 dotnet test Mif.slnx
 ```
 
-The end-to-end drill drives a real browser with a virtual passkey through the full story against the running stack, stopping and starting `fake-entra` itself.
+The end-to-end drill drives a real browser with a virtual passkey through the full story against the running stack, stopping and starting `fake-entra` itself. Run it on the machine that hosts the stack.
 
 ```bash
 cd e2e
@@ -85,11 +88,21 @@ npx playwright install chromium
 npm run drill
 ```
 
+In mesh mode, pass the hostname and let Node trust the test certificate authority (the browser uses the system trust store):
+
+```bash
+MIF_HOST=<same as in .env> NODE_EXTRA_CA_CERTS=../mif-test-root-ca.crt npm run drill
+```
+
 ## Layout
 
 ```
 prototype/
-├─ docker-compose.yml
+├─ docker-compose.yml         default: HTTP on localhost, stand-in for Entra
+├─ docker-compose.mesh.yml    adds HTTPS on one hostname for other devices
+├─ docker-compose.entra.yml   real Entra tenant instead of the stand-in
+├─ .env.example               selects the mode
+├─ caddy/Caddyfile            TLS proxy for mesh mode
 ├─ Dockerfile                 builds either .NET service
 ├─ keycloak/
 │  ├─ mif-realm.json          broker realm: upstream IdP, both sign-in flows, clients
@@ -102,21 +115,58 @@ prototype/
 └─ e2e/outage-drill.cjs
 ```
 
-## Pointing it at a real Entra tenant
+## Other modes
 
-Not tested yet. The upstream is configured entirely through the `MIF_UPSTREAM_*` variables on the `keycloak` service and the `Mif__Upstream__*` variables on `mif-node`, so no code or realm changes should be needed:
+The default is plain HTTP on localhost, which only works from the machine running the stack. Two more modes are selected in a `.env` file; copy [`.env.example`](.env.example) and edit it.
 
-| Variable | Entra value |
+Switching modes changes URLs that are written into the realms at first start, so always recreate the stack afterwards:
+
+```bash
+docker compose down -v && docker compose up -d --build
+```
+
+This deletes all users and passkeys. Passkeys are bound to the hostname and would not carry over anyway.
+
+### Mesh mode: reach it from other devices
+
+Passkeys need HTTPS on a real hostname, so mesh mode puts a TLS proxy (Caddy) in front and publishes each service on its own port of one hostname.
+
+```
+COMPOSE_FILE=docker-compose.yml:docker-compose.mesh.yml
+MIF_HOST=<a name that resolves to this machine on the VPN or mesh>
+```
+
+| URL | Service |
 |---|---|
-| `MIF_UPSTREAM_ISSUER` | `https://login.microsoftonline.com/<tenant-id>/v2.0` |
-| `MIF_UPSTREAM_AUTHORIZATION_URL` | `https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/authorize` |
-| `MIF_UPSTREAM_TOKEN_URL` | `https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/token` |
-| `MIF_UPSTREAM_JWKS_URL` | `https://login.microsoftonline.com/<tenant-id>/discovery/v2.0/keys` |
-| `MIF_UPSTREAM_CLIENT_ID` / `_SECRET` | The broker app registration |
-| `Mif__Upstream__DiscoveryUrl` | `https://login.microsoftonline.com/<tenant-id>/v2.0/.well-known/openid-configuration` |
-| `Mif__Upstream__ProbeTokenUrl`, `ProbeClientId`, `ProbeClientSecret`, `ProbeScope` | A separate app registration with no permissions. Confirm in your tenant which scope it can request. |
+| `https://MIF_HOST:5443` | Demo portal |
+| `https://MIF_HOST:8443` | MIF broker |
+| `https://MIF_HOST:8444` | Stand-in for Entra |
+| `https://MIF_HOST:8448` | MIF node, public endpoints |
 
-The realm is imported only when it does not exist yet. After changing these values, recreate the stack with `docker compose down -v`.
+Certificates come from a private certificate authority that Caddy creates on first start. Every device you test from must trust its root certificate:
+
+```bash
+docker compose exec -T caddy cat /data/caddy/pki/authorities/local/root.crt > mif-test-root-ca.crt
+```
+
+Install that file as a trusted root on each test device, and remove it when you are done: whoever holds the matching private key (it lives in the `caddy-data` volume) can impersonate any site to a device that trusts it. `docker compose down -v` destroys the key.
+
+Use one hostname for every network path. A passkey enrolled under one name does not work under another.
+
+### A real Entra tenant
+
+**Not yet verified against a real tenant.** Add `docker-compose.entra.yml` to `COMPOSE_FILE` and fill in the `ENTRA_*` values in `.env`. The stand-in is then not started.
+
+In Entra you need an app registration for the broker:
+
+- Redirect URI (type Web): `https://MIF_HOST:8443/realms/mif/broker/entra/endpoint` in mesh mode, or `http://localhost:8080/realms/mif/broker/entra/endpoint` on localhost.
+- A client secret.
+- Optional ID token claims `email`, `given_name` and `family_name`, otherwise the broker asks each user to type them at first sign-in.
+- An app role with the value `finance-approver`, assigned to the test user who should be allowed the high-risk action.
+
+A second app registration with a secret and no permissions enables the synthetic sign-in probe. Without it the node checks Entra's discovery document and signing keys only.
+
+Entra cannot be stopped to simulate an outage, so force degraded mode with the operator command above.
 
 ## Not for deployment as is
 

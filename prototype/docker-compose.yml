@@ -2,6 +2,9 @@
 # Every secret in this file is a throwaway value for local use. Do not reuse any of it in a deployment.
 #
 #   docker compose up -d --build      start everything
+#
+# By default everything is served over plain HTTP on localhost only. To reach the stack from other
+# devices over a VPN or mesh, or to use a real Entra tenant, copy .env.example to .env and edit it.
 #   docker compose stop fake-entra    simulate the upstream outage
 #   docker compose start fake-entra   end it
 #   docker compose down -v            remove everything, including data
@@ -33,6 +36,7 @@ services:
       KC_DB_PASSWORD: mif-dev-only
       KC_HOSTNAME: http://localhost:8080
       KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      MIF_PORTAL_URL: http://localhost:5080
       MIF_UPSTREAM_CLIENT_ID: mif-broker
       MIF_UPSTREAM_CLIENT_SECRET: dev-only-broker-secret
       MIF_UPSTREAM_ISSUER: http://localhost:8090/realms/upstream
@@ -42,7 +46,7 @@ services:
     volumes:
       - ./keycloak/mif-realm.json:/opt/keycloak/data/import/mif-realm.json:ro
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
 
   # Stand-in for Microsoft Entra ID. Stop this container to simulate the outage.
   fake-entra:
@@ -53,10 +57,11 @@ services:
       KC_BOOTSTRAP_ADMIN_PASSWORD: admin-dev-only
       KC_HOSTNAME: http://localhost:8090
       KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      MIF_BROKER_URL: http://localhost:8080
     volumes:
       - ./keycloak/upstream-realm.json:/opt/keycloak/data/import/upstream-realm.json:ro
     ports:
-      - "8090:8080"
+      - "127.0.0.1:8090:8080"
 
   # Snapshot service + continuity controller.
   mif-node:
@@ -84,8 +89,8 @@ services:
     volumes:
       - mif-keys:/data/keys
     ports:
-      - "8088:8080"            # public: /status, /healthz, JWKS, snapshot verification
-      - "127.0.0.1:8081:8081"  # operator: loopback only
+      - "127.0.0.1:8088:8080"  # public endpoints: /status, /healthz, JWKS, snapshot verification
+      - "127.0.0.1:8081:8081"  # operator endpoints: always loopback only
 
   # Example application. It trusts the MIF node and nothing else.
   demo-portal:
@@ -99,7 +104,7 @@ services:
       Oidc__ClientSecret: dev-only-portal-secret
       MifNode__StatusUrl: http://mif-node:8080/status
     ports:
-      - "5080:5080"
+      - "127.0.0.1:5080:5080"
 
 volumes:
   mif-keys:

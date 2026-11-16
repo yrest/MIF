@@ -1,0 +1,42 @@
+# Mesh mode: serve the prototype over HTTPS on one hostname, so other devices on a VPN or mesh
+# can use it and passkeys work from them. Select it in .env (see .env.example):
+#
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.mesh.yml
+#   MIF_HOST=<name that resolves to this machine on the mesh>
+#
+# Switching modes changes the URLs baked into the imported realms, so recreate the stack with
+# `docker compose down -v` first. Passkeys are bound to the hostname and do not carry over.
+services:
+  caddy:
+    image: caddy:2
+    environment:
+      MIF_HOST: ${MIF_HOST:?Set MIF_HOST in .env to the hostname other devices use to reach this machine}
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    ports:
+      - "8443:8443"   # MIF broker
+      - "8444:8444"   # stand-in for Entra
+      - "5443:5443"   # demo portal
+      - "8448:8448"   # MIF node: /status, /healthz, JWKS, snapshot verification
+
+  keycloak:
+    environment:
+      KC_HOSTNAME: https://${MIF_HOST}:8443
+      KC_PROXY_HEADERS: xforwarded
+      MIF_PORTAL_URL: https://${MIF_HOST}:5443
+      MIF_UPSTREAM_ISSUER: https://${MIF_HOST}:8444/realms/upstream
+      MIF_UPSTREAM_AUTHORIZATION_URL: https://${MIF_HOST}:8444/realms/upstream/protocol/openid-connect/auth
+
+  fake-entra:
+    environment:
+      KC_HOSTNAME: https://${MIF_HOST}:8444
+      KC_PROXY_HEADERS: xforwarded
+      MIF_BROKER_URL: https://${MIF_HOST}:8443
+
+  demo-portal:
+    environment:
+      TrustForwardedHeaders: "true"
+
+volumes:
+  caddy-data:

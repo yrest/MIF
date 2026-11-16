@@ -93,7 +93,9 @@ A user who is still signed in from before the outage keeps that session until it
 
 ### Recovery
 
-When the probes succeed for long enough, the node switches the broker back and **ends every session**. Everyone signs in again through Entra, so no session opened with a passkey outlives the outage.
+When the probes succeed for long enough, the node switches the broker back and **ends every session at the broker**. Everyone signs in again through Entra, so no session opened with a passkey regains full access without a live verification.
+
+An application keeps its own session until that expires. A user who signed in with a passkey therefore stays in the restricted session, in that application, until they sign out and in again or the application's session ends. Keep application sessions short for this reason.
 
 ## 6. Identity snapshots
 
@@ -195,7 +197,7 @@ The spec marks several things as not optional for production. This is where v0 s
 | Applications deny privileged operations by default in degraded mode (§12.3) | Met in the demo portal through the `Mif.LiveIdentity` policy. There is no central policy engine (OPA). |
 | Out-of-band kill switch, revocation applied within 60 seconds (§15.4) | **Partly met.** Manual revocation on the node is immediate and independent of Entra. There is no event bus. |
 | Degraded tokens live at most 30 minutes (§13.2) | Met: access tokens live 5 minutes. A degraded session itself lasts until it idles out or reaches its maximum age, the snapshot expires, an operator revokes it, or recovery. |
-| All degraded sessions invalidated at recovery (§13.5) | Met: the node ends every session. |
+| All degraded sessions invalidated at recovery (§13.5) | Met at the broker: the node ends every broker session. An application's own session lasts until it expires (one hour in the demo portal) and stays restricted for that time. |
 | Audit entry for every session active during degraded mode (§13.5) | **Not met.** Mode changes, snapshots, revocations and the session sweep are logged; individual degraded sign-ins are only in the broker's own event log. |
 | Two demo applications, low risk and high risk (§21) | One portal with one low-risk and one high-risk action. |
 

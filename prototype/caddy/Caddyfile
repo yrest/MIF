@@ -1,0 +1,30 @@
+# HTTPS front for mesh mode (docker-compose.mesh.yml).
+#
+# Passkeys need HTTPS on a real hostname, so each service is published on its own port of one
+# hostname. Certificates come from a private certificate authority that Caddy creates on first
+# start; test devices must be told to trust its root certificate (see the prototype README).
+{
+	local_certs
+	skip_install_trust
+	auto_https disable_redirects
+}
+
+# MIF broker
+{$MIF_HOST}:8443 {
+	reverse_proxy keycloak:8080
+}
+
+# Stand-in for Entra
+{$MIF_HOST}:8444 {
+	reverse_proxy fake-entra:8080
+}
+
+# Demo portal
+{$MIF_HOST}:5443 {
+	reverse_proxy demo-portal:5080
+}
+
+# MIF node, public endpoints only. The operator port is never published here.
+{$MIF_HOST}:8448 {
+	reverse_proxy mif-node:8080
+}

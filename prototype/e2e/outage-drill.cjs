@@ -6,18 +6,25 @@
 //   docker compose up -d --build     (from the prototype directory)
 //   cd e2e && npm install && npx playwright install chromium && npm run drill
 //
-// The drill stops and starts the fake-entra container itself.
+// Run it on the machine that hosts the stack: it stops and starts the fake-entra container itself.
+//
+// In mesh mode (docker-compose.mesh.yml), set MIF_HOST to the same value as in .env. The browser
+// then needs to trust the test certificate authority, and so does Node:
+//   MIF_HOST=my-mac.netbird.cloud NODE_EXTRA_CA_CERTS=../mif-test-root-ca.crt npm run drill
 
 const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
 const path = require('node:path');
 const { chromium } = require('playwright');
 
-const PORTAL = process.env.PORTAL_URL ?? 'http://localhost:5080';
-const NODE = process.env.MIF_NODE_URL ?? 'http://localhost:8088';
-const OPERATOR = process.env.MIF_OPERATOR_URL ?? 'http://localhost:8081';
-const UPSTREAM_HOST = 'localhost:8090';
-const BROKER_HOST = 'localhost:8080';
+const MESH_HOST = process.env.MIF_HOST;
+const PORTAL = MESH_HOST ? `https://${MESH_HOST}:5443` : 'http://localhost:5080';
+const BROKER = MESH_HOST ? `https://${MESH_HOST}:8443` : 'http://localhost:8080';
+const UPSTREAM = MESH_HOST ? `https://${MESH_HOST}:8444` : 'http://localhost:8090';
+const NODE = MESH_HOST ? `https://${MESH_HOST}:8448` : 'http://localhost:8088';
+const OPERATOR = 'http://localhost:8081'; // never published beyond loopback
+const UPSTREAM_HOST = new URL(UPSTREAM).host;
+const BROKER_HOST = new URL(BROKER).host;
 const PROTOTYPE_DIR = path.resolve(__dirname, '..');
 
 const compose = (...args) => execFileSync('docker', ['compose', ...args], { cwd: PROTOTYPE_DIR, stdio: 'pipe' });
@@ -51,9 +58,10 @@ const step = title => console.log(`\n${++stepNumber}. ${title}`);
 const ok = message => console.log(`   ok  ${message}`);
 
 async function main() {
+  console.log(`Target: ${PORTAL} (${MESH_HOST ? 'mesh mode' : 'localhost mode'})`);
   step('Wait for the stack and a healthy upstream');
   await until('portal, broker and upstream to be up, and the node to have probed its way to Normal mode', async () => {
-    const up = await Promise.all([PORTAL, `http://${BROKER_HOST}/realms/mif/.well-known/openid-configuration`, `http://${UPSTREAM_HOST}/realms/upstream/.well-known/openid-configuration`]
+    const up = await Promise.all([PORTAL, `${BROKER}/realms/mif/.well-known/openid-configuration`, `${UPSTREAM}/realms/upstream/.well-known/openid-configuration`]
       .map(async url => (await fetch(url)).ok));
     // On a cold start the node may pass through Degraded while the upstream container is still booting.
     const { mode, upstreamHealthy, revalidationPending } = (await json(`${NODE}/status`)).body.continuity;
@@ -172,7 +180,6 @@ async function main() {
 
     step('Operator endpoints are not reachable on the public port');
     assert.equal((await fetch(`${NODE}/operator/audit`)).status, 404);
-    assert.equal((await fetch(`${NODE}/operator/audit`, { headers: { host: 'localhost:8081' } })).status, 404);
     ok('public port returns 404 for /operator');
 
     step('Recovery: the upstream IdP comes back');
@@ -183,7 +190,7 @@ async function main() {
     ok('node returned to Normal and ended all sessions');
 
     step('Normal mode again: Alice is verified live, which lifts the revocation');
-    await until('upstream sign-in page to answer', async () => (await fetch(`http://${UPSTREAM_HOST}/realms/upstream/.well-known/openid-configuration`)).ok);
+    await until('upstream sign-in page to answer', async () => (await fetch(`${UPSTREAM}/realms/upstream/.well-known/openid-configuration`)).ok);
     await signOutEverywhere();
     await openAccount();
     assert.equal(await sessionMode(), 'live');

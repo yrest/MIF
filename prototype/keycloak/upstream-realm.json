@@ -5,7 +5,10 @@
   "sslRequired": "none",
   "roles": {
     "realm": [
-      { "name": "finance-approver", "description": "Stand-in for an Entra app role" }
+      {
+        "name": "finance-approver",
+        "description": "Stand-in for an Entra app role"
+      }
     ]
   },
   "users": [
@@ -16,8 +19,16 @@
       "emailVerified": true,
       "firstName": "Alice",
       "lastName": "Murphy",
-      "credentials": [{ "type": "password", "value": "alice-dev-only", "temporary": false }],
-      "realmRoles": ["finance-approver"]
+      "credentials": [
+        {
+          "type": "password",
+          "value": "alice-dev-only",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "finance-approver"
+      ]
     },
     {
       "username": "bob",
@@ -26,7 +37,13 @@
       "emailVerified": true,
       "firstName": "Bob",
       "lastName": "Byrne",
-      "credentials": [{ "type": "password", "value": "bob-dev-only", "temporary": false }]
+      "credentials": [
+        {
+          "type": "password",
+          "value": "bob-dev-only",
+          "temporary": false
+        }
+      ]
     },
     {
       "username": "service-account-mif-probe",
@@ -42,7 +59,9 @@
       "publicClient": false,
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": false,
-      "redirectUris": ["http://localhost:8080/realms/mif/broker/entra/endpoint"],
+      "redirectUris": [
+        "${MIF_BROKER_URL}/realms/mif/broker/entra/endpoint"
+      ],
       "protocolMappers": [
         {
           "name": "roles",

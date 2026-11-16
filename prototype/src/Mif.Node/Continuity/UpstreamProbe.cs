@@ -34,7 +34,9 @@ public sealed class OidcUpstreamProbe(HttpClient http, IOptions<MifOptions> opti
             using var jwks = await http.GetAsync(jwksUri, timeout.Token);
             if (!jwks.IsSuccessStatusCode) return new(false, $"signing keys returned {(int)jwks.StatusCode}");
 
-            if (string.IsNullOrEmpty(_upstream.ProbeTokenUrl)) return new(true, "discovery and signing keys reachable");
+            // The token request needs its own client. Without one, report what could be checked.
+            if (string.IsNullOrEmpty(_upstream.ProbeTokenUrl) || string.IsNullOrEmpty(_upstream.ProbeClientId))
+                return new(true, "discovery and signing keys reachable");
 
             step = "token request";
             var form = new Dictionary<string, string>
